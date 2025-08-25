@@ -1,0 +1,148 @@
+blueprint:
+  name: Wiim/LinkPlay – Speak message and resume
+  description: >
+    Interrupt a Wiim/LinkPlay media_player to speak a TTS message,
+    then restore the previous queue and resume playback.
+    Works with any media_player that supports snapshot/restore.
+  domain: script
+  source_url: https://example.local/wiim_speak_resume.yaml
+
+  input:
+    target_player:
+      name: Target media player
+      description: Wiim/LinkPlay media_player entity to interrupt
+      selector:
+        entity:
+          domain: media_player
+    message:
+      name: Message
+      description: The TTS text to speak
+      selector:
+        text:
+    tts_language:
+      name: TTS language (optional)
+      default: ""
+      selector:
+        text:
+    announce_volume:
+      name: Announcement volume (0.0–1.0)
+      description: Temporary volume for the spoken message
+      default: 0.55
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: slider
+    max_wait_seconds:
+      name: Max wait for TTS to finish (seconds)
+      default: 45
+      selector:
+        number:
+          min: 5
+          max: 300
+          step: 5
+    pre_delay_ms:
+      name: Pre-announce delay (ms)
+      description: Give the snapshot/volume change a beat to settle
+      default: 300
+      selector:
+        number:
+          min: 0
+          max: 3000
+          step: 50
+    post_delay_ms:
+      name: Post-announce delay (ms)
+      description: Small delay before restoring state
+      default: 250
+      selector:
+        number:
+          min: 0
+          max: 3000
+          step: 50
+
+mode: queued
+max: 10
+fields: {}
+
+sequence:
+  - variables:
+      player: !input target_player
+      announce_volume: !input announce_volume
+      msg: !input message
+      tts_language: !input tts_language
+      max_wait: !input max_wait_seconds
+      pre_delay: !input pre_delay_ms
+      post_delay: !input post_delay_ms
+      was_playing: "{{ is_state(player, 'playing') }}"
+      previous_volume: "{{ state_attr(player, 'volume_level') | default(0.3) }}"
+
+  # Snapshot current state/queue
+  - service: media_player.snapshot
+    target:
+      entity_id: "{{ player }}"
+    data:
+      # include_grouping is ignored by some integrations but safe to set
+      keep_volume: true
+
+  # Optional small pause to ensure snapshot completes
+  - delay:
+      milliseconds: "{{ pre_delay | int }}"
+
+  # Set temporary volume (only if different)
+  - choose:
+      - conditions: "{{ previous_volume | float(default=0.3) != announce_volume | float }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: "{{ player }}"
+            data:
+              volume_level: "{{ announce_volume | float }}"
+          - delay:
+              milliseconds: 150
+
+  # Speak using the unified TTS service (works with most engines)
+  - service: tts.speak
+    data:
+      media_player_entity_id: "{{ player }}"
+      message: "{{ msg }}"
+      cache: true
+      language: "{{ tts_language if tts_language | length > 0 else none }}"
+
+  # Wait until TTS finishes, but don’t hang forever
+  - wait_for_trigger:
+      - platform: state
+        entity_id: "{{ player }}"
+        from: "playing"
+        to:
+          - "idle"
+          - "paused"
+          - "off"
+      - platform: state
+        entity_id: "{{ player }}"
+        to:
+          - "idle"
+          - "paused"
+          - "off"
+    timeout:
+      seconds: "{{ max_wait | int }}"
+    continue_on_timeout: true
+
+  # Short settle time
+  - delay:
+      milliseconds: "{{ post_delay | int }}"
+
+  # Restore prior state (queue, source, position, volume)
+  - service: media_player.restore
+    target:
+      entity_id: "{{ player }}"
+
+  # If it was playing before, make sure we resume (some integrations restore to paused)
+  - choose:
+      - conditions: "{{ was_playing }}"
+        sequence:
+          - delay:
+              milliseconds: 250
+          - service: media_player.media_play
+            target:
+              entity_id: "{{ player }}"
