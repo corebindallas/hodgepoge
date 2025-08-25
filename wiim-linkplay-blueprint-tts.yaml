@@ -5,7 +5,7 @@ blueprint:
     then restore the previous queue and resume playback.
     Works with any media_player that supports snapshot/restore.
   domain: script
-  source_url: https://example.local/wiim_speak_resume.yaml
+  source_url: https://raw.githubusercontent.com/corebindallas/hodgepoge/refs/heads/main/wiim-linkplay-blueprint-tts.yaml
 
   input:
     target_player:
